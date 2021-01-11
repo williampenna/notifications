@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Notifications API
+
+Parameters:
+  Stage:
+    Type: String
+  Region:
+    Type: String
+
+Resources:
+# API Gateway
+  WPNotificationsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Tags:
+        Environment: !Ref Stage
+        Service: API
+        Name: !Sub "${Stage}-notifications"
+      Name: !Sub ${Stage}-notifications
+      StageName: !Ref Stage
+      Cors:
+        AllowMethods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+        AllowHeaders: "'X-Amz-Security-Token,Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowOrigin: "'*'"
+        MaxAge: "'600'"
+
+# API Gateway Resources
+  GatewayResponseDefault4XX:
+    Type: 'AWS::ApiGateway::GatewayResponse'
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseType: UNAUTHORIZED
+      RestApiId:
+        Ref: 'IClubsLoyaltyApi'
+      StatusCode: "401"
+
+# Lambda
+  SaveNotificationLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-save-notification"
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: ./../
+      Handler: dist/handler/notifications.send
+      Runtime: nodejs12.x
+      Timeout: 30
+      Tags:
+        Environment: !Ref Stage
+        Service: Lambda
+        Name: !Sub "${Stage}-save-notification"
+      Environment:
+        Variables:
+          STAGE: !Ref Stage
+          REGION: !Ref Region
+      Events:
+        Notification:
+          Type: Api
+          Properties:
+            Path: /v1/notifications
+            Method: post
+            RestApiId: !Ref WPNotificationsApi
+
+# DynamoDB
+  NotificationsDDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${Stage}_notifications
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Environment
+          Value: !Ref Stage
+        - Key: Service
+          Value: DynamoDB
+        - Key: Name
+          Value: !Sub "${Stage}_notifications"
+
+  NotificationKinesis:
+    Type: AWS::Kinesis::Stream
+    Properties: 
+      Name: !Sub ${Stage}_notifications
+      ShardCount: 1
+      Tags: 
+        - Key: Environment
+          Value: !Ref Stage
+        - Key: Service
+          Value: Kinesis
+        - Key: Name
+          Value: !Sub "${Stage}_notifications"
+
+  NotificationsKinesisStreamConsumer:
+    Type: "AWS::Kinesis::StreamConsumer"
+    Properties:
+      StreamARN: !GetAtt NotificationKinesis.Arn
+      ConsumerName: !Ref NotificationsDDBTable
+
+# Lambda Role
+  LambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+                - "events.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CooperDefaultLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - lambda:PublishVersion
+                  - apigateway:POST
+                  - sqs:*
+                  - lambda:InvokeFunction
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - dynamoDB:*
+                Resource: "*"
